@@ -18,8 +18,12 @@ from telegram.ext import (
 import db
 
 TOKEN = os.environ["TELEGRAM_TOKEN"]
-CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 DIGEST_HOUR = 21  # 9pm
+
+ALLOWED_IDS = {
+    int(x.strip())
+    for x in os.environ.get("ALLOWED_CHAT_IDS", "778638074,8644812990").split(",")
+}
 
 VAULTS = {"trip"}
 DEFAULT_VAULT = "trip"
@@ -40,9 +44,17 @@ def _totals_text(totals: dict) -> str:
     return "\n".join(lines)
 
 
-async def _save_and_reply(amount: float, reply_fn):
-    db.add_entry(DEFAULT_VAULT, amount)
-    totals = db.get_totals()
+def _uid(update: Update) -> int:
+    return update.effective_user.id
+
+
+def _is_allowed(update: Update) -> bool:
+    return _uid(update) in ALLOWED_IDS
+
+
+async def _save_and_reply(user_id: int, amount: float, note, reply_fn):
+    db.add_entry(user_id, DEFAULT_VAULT, amount, note)
+    totals = db.get_totals(user_id)
     running = totals.get(DEFAULT_VAULT, 0)
     await reply_fn(
         f"+${amount:.2f} → {DEFAULT_VAULT}\nRunning total: ${running:.2f}",
@@ -51,10 +63,9 @@ async def _save_and_reply(amount: float, reply_fn):
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "How much did you save?",
-        reply_markup=_quick_keyboard(),
-    )
+    if not _is_allowed(update):
+        return
+    await update.message.reply_text("How much did you save?", reply_markup=_quick_keyboard())
 
 
 async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -62,7 +73,9 @@ async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    totals = db.get_totals()
+    if not _is_allowed(update):
+        return
+    totals = db.get_totals(_uid(update))
     await update.message.reply_text(
         f"Pending transfers:\n{_totals_text(totals)}",
         reply_markup=_quick_keyboard(),
@@ -70,7 +83,9 @@ async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rows = db.get_history(7)
+    if not _is_allowed(update):
+        return
+    rows = db.get_history(_uid(update), 7)
     if not rows:
         await update.message.reply_text("No entries in last 7 days.", reply_markup=_quick_keyboard())
         return
@@ -82,9 +97,12 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    totals = db.get_totals()
+    if not _is_allowed(update):
+        return
+    uid = _uid(update)
+    totals = db.get_totals(uid)
     amount = totals.get(DEFAULT_VAULT, 0)
-    db.mark_transferred(DEFAULT_VAULT)
+    db.mark_transferred(uid, DEFAULT_VAULT)
     await update.message.reply_text(
         f"Marked ${amount:.2f} → {DEFAULT_VAULT} as transferred. Balance reset.",
         reply_markup=_quick_keyboard(),
@@ -92,41 +110,34 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_allowed(update):
+        return
     query = update.callback_query
     await query.answer()
     amount = float(query.data)
-    await _save_and_reply(amount, query.edit_message_text)
+    await _save_and_reply(_uid(update), amount, None, query.edit_message_text)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_allowed(update):
+        return
     text = update.message.text.strip()
-
-    # accept plain number or number with optional note
     match = re.match(r"^(\d+(?:\.\d+)?)\s*(.*)?$", text)
     if not match:
-        await update.message.reply_text(
-            "Send a number (e.g. 20) or tap a button.",
-            reply_markup=_quick_keyboard(),
-        )
+        await update.message.reply_text("Send a number (e.g. 20) or tap a button.", reply_markup=_quick_keyboard())
         return
-
     amount = float(match.group(1))
     note = match.group(2).strip() or None
-    db.add_entry(DEFAULT_VAULT, amount, note)
-    totals = db.get_totals()
-    running = totals.get(DEFAULT_VAULT, 0)
-    await update.message.reply_text(
-        f"+${amount:.2f} → {DEFAULT_VAULT}\nRunning total: ${running:.2f}",
-        reply_markup=_quick_keyboard(),
-    )
+    await _save_and_reply(_uid(update), amount, note, update.message.reply_text)
 
 
 async def send_digest(context: ContextTypes.DEFAULT_TYPE):
-    totals = db.get_totals()
-    if not totals:
-        return
-    text = f"Daily digest — transfer these to SoFi vaults:\n{_totals_text(totals)}\n\nReply /done to reset after transferring."
-    await context.bot.send_message(chat_id=CHAT_ID, text=text, reply_markup=_quick_keyboard())
+    for uid in ALLOWED_IDS:
+        totals = db.get_totals(uid)
+        if not totals:
+            continue
+        text = f"Daily digest — transfer these to SoFi vaults:\n{_totals_text(totals)}\n\nReply /done to reset after transferring."
+        await context.bot.send_message(chat_id=uid, text=text, reply_markup=_quick_keyboard())
 
 
 def main():

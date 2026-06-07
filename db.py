@@ -16,6 +16,7 @@ def init_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
                 vault TEXT NOT NULL,
                 amount REAL NOT NULL,
                 note TEXT,
@@ -23,44 +24,49 @@ def init_db():
                 transferred INTEGER NOT NULL DEFAULT 0
             )
         """)
+        # migrate existing rows that predate user_id column
+        try:
+            conn.execute("ALTER TABLE entries ADD COLUMN user_id INTEGER NOT NULL DEFAULT 778638074")
+        except Exception:
+            pass
         conn.commit()
 
 
-def add_entry(vault: str, amount: float, note: str | None = None):
+def add_entry(user_id: int, vault: str, amount: float, note: str | None = None):
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO entries (vault, amount, note, date) VALUES (?, ?, ?, ?)",
-            (vault, amount, note, date.today().isoformat()),
+            "INSERT INTO entries (user_id, vault, amount, note, date) VALUES (?, ?, ?, ?, ?)",
+            (user_id, vault, amount, note, date.today().isoformat()),
         )
         conn.commit()
 
 
-def get_totals(transferred: bool = False) -> dict[str, float]:
+def get_totals(user_id: int, transferred: bool = False) -> dict[str, float]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT vault, SUM(amount) as total FROM entries WHERE transferred = ? GROUP BY vault",
-            (1 if transferred else 0,),
+            "SELECT vault, SUM(amount) as total FROM entries WHERE user_id = ? AND transferred = ? GROUP BY vault",
+            (user_id, 1 if transferred else 0),
         ).fetchall()
     return {row["vault"]: row["total"] for row in rows}
 
 
-def get_history(days: int = 7) -> list[sqlite3.Row]:
+def get_history(user_id: int, days: int = 7) -> list[sqlite3.Row]:
     with get_conn() as conn:
         rows = conn.execute(
             """
             SELECT vault, amount, note, date FROM entries
-            WHERE date >= date('now', ?)
+            WHERE user_id = ? AND date >= date('now', ?)
             ORDER BY date DESC, id DESC
             """,
-            (f"-{days} days",),
+            (user_id, f"-{days} days"),
         ).fetchall()
     return rows
 
 
-def mark_transferred(vault: str):
+def mark_transferred(user_id: int, vault: str):
     with get_conn() as conn:
         conn.execute(
-            "UPDATE entries SET transferred = 1 WHERE vault = ? AND transferred = 0",
-            (vault,),
+            "UPDATE entries SET transferred = 1 WHERE user_id = ? AND vault = ? AND transferred = 0",
+            (user_id, vault),
         )
         conn.commit()
