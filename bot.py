@@ -57,6 +57,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Your chat ID: `{update.effective_user.id}`", parse_mode="Markdown")
+
+
 async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     totals = db.get_totals()
     await update.message.reply_text(
@@ -130,6 +134,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(CommandHandler("summary", cmd_summary))
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("done", cmd_done))
